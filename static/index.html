@@ -1,0 +1,950 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Hangman</title>
+  <style>
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: "Trebuchet MS", "Arial", sans-serif;
+      color: #f8f8f8;
+      min-height: 100vh;
+      overflow: hidden;
+      background: #111;
+    }
+
+    .chalk-bg {
+      min-height: 100vh;
+      width: 100vw;
+      background:
+        linear-gradient(rgba(0,0,0,0.28), rgba(0,0,0,0.38)),
+        url("/static/blackboard.jpg") center center / cover no-repeat;
+    }
+
+    .app {
+      width: 100vw;
+      height: 100vh;
+    }
+
+    .screen {
+      display: none;
+      width: 100vw;
+      height: 100vh;
+    }
+
+    .screen.active {
+      display: flex;
+    }
+
+    .full {
+      width: 100vw;
+      height: 100vh;
+      padding: 24px 36px;
+    }
+
+    .center-wrap {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      width: 100%;
+      height: 100%;
+    }
+
+    .center-col {
+      width: 100%;
+      max-width: 460px;
+      text-align: center;
+    }
+
+    .title {
+      text-align: center;
+      font-size: 68px;
+      margin: 0 0 18px;
+      letter-spacing: 2px;
+      color: #f7f7f7;
+      font-family: "Comic Sans MS", "Trebuchet MS", cursive, sans-serif;
+      text-shadow: 0 0 2px rgba(255,255,255,0.15);
+    }
+
+    .subtitle {
+      text-align: center;
+      color: #d9e0e1;
+      font-size: 20px;
+      margin-bottom: 28px;
+      line-height: 1.6;
+      text-shadow: 0 1px 1px rgba(0,0,0,0.4);
+    }
+
+    label {
+      display: block;
+      text-align: left;
+      margin-bottom: 8px;
+      font-size: 18px;
+      color: #e7ebec;
+    }
+
+    input {
+      width: 100%;
+      padding: 14px 16px;
+      border: none;
+      border-bottom: 3px solid rgba(255,255,255,0.45);
+      background: transparent;
+      color: #fff;
+      font-size: 22px;
+      margin-bottom: 18px;
+      outline: none;
+    }
+
+    input::placeholder {
+      color: rgba(255,255,255,0.45);
+    }
+
+    button {
+      border: none;
+      padding: 14px 18px;
+      font-size: 18px;
+      cursor: pointer;
+      font-weight: 700;
+      border-radius: 999px;
+      transition: transform 0.12s ease, opacity 0.15s ease;
+    }
+
+    button:hover {
+      transform: translateY(-1px);
+      opacity: 0.95;
+    }
+
+    .btn-primary {
+      width: 100%;
+      background: #9ce27d;
+      color: #102012;
+    }
+
+    .btn-secondary {
+      background: #f4d35e;
+      color: #231d08;
+    }
+
+    .btn-danger {
+      background: #ff7b7b;
+      color: #341111;
+    }
+
+    .btn-dark {
+      background: rgba(255,255,255,0.08);
+      color: #f5f5f5;
+      border: 1px solid rgba(255,255,255,0.15);
+    }
+
+    .status-line {
+      text-align: center;
+      margin-top: 14px;
+      color: #d8dddd;
+      min-height: 24px;
+      font-size: 18px;
+    }
+
+    .waiting-box,
+    .role-box,
+    .result-box {
+      text-align: center;
+      width: 100%;
+    }
+
+    .big-icon {
+      font-size: 56px;
+      margin-bottom: 20px;
+    }
+
+    .big-text {
+      font-size: 32px;
+      margin-bottom: 14px;
+      color: #f5f7f7;
+      text-shadow: 0 1px 1px rgba(0,0,0,0.35);
+    }
+
+    .small-text {
+      font-size: 20px;
+      color: #d7ddde;
+      line-height: 1.6;
+      text-shadow: 0 1px 1px rgba(0,0,0,0.35);
+    }
+
+    .countdown {
+      font-size: 30px;
+      color: #9ce27d;
+      margin-top: 18px;
+      font-weight: 800;
+    }
+
+    .game-shell {
+      width: 100%;
+      height: 100%;
+      display: grid;
+      grid-template-rows: auto 1fr;
+      gap: 16px;
+    }
+
+    .top-mini-bar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      padding: 4px 0;
+    }
+
+    .top-mini-left {
+      display: flex;
+      gap: 18px;
+      align-items: center;
+      flex-wrap: wrap;
+      font-size: 15px;
+      color: #e8eded;
+    }
+
+    .mini-item {
+      opacity: 0.95;
+    }
+
+    .mini-strong {
+      font-weight: 700;
+    }
+
+    .main-board {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      width: 100%;
+      height: 100%;
+    }
+
+    .board-inner {
+      width: 100%;
+      max-width: 980px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: calc(100vh - 120px);
+      text-align: center;
+      padding-top: 10px;
+    }
+
+    .hint-area {
+      min-height: 60px;
+      width: 100%;
+      max-width: 900px;
+      margin-bottom: 4px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 6px;
+    }
+
+    .hint-title {
+      font-size: 18px;
+      color: #f1f3f3;
+      opacity: 0.9;
+      letter-spacing: 1px;
+    }
+
+    .hint-list-inline {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 10px;
+      max-width: 900px;
+    }
+
+    .hint-chip {
+      padding: 8px 14px;
+      border-radius: 999px;
+      border: 1px dashed rgba(255,255,255,0.35);
+      background: rgba(255,255,255,0.05);
+      color: #ffe6a7;
+      font-size: 16px;
+    }
+
+    .chalk-stage {
+      width: 100%;
+      min-height: 220px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 4px 12px;
+      margin-bottom: 2px;
+    }
+
+    .hangman-image {
+      max-width: 260px;
+      max-height: 260px;
+      width: auto;
+      height: auto;
+      object-fit: contain;
+      filter: drop-shadow(0 2px 4px rgba(0,0,0,0.25));
+    }
+
+    .mid-message {
+      text-align: center;
+      color: #e2e8e9;
+      margin-bottom: 10px;
+      min-height: 26px;
+      font-size: 22px;
+      text-shadow: 0 1px 1px rgba(0,0,0,0.35);
+    }
+
+    .word-wrap {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      gap: 18px;
+      flex-wrap: wrap;
+      min-height: 90px;
+      margin-top: 0;
+      margin-bottom: 16px;
+    }
+
+    .slot {
+      width: 66px;
+      height: 85px;
+      border-bottom: 5px solid #f5f5f5;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 42px;
+      font-weight: 800;
+      color: #f8f8f8;
+      cursor: default;
+      user-select: none;
+      background: transparent;
+    }
+
+    .slot.clickable {
+      cursor: pointer;
+    }
+
+    .slot.selected {
+      border-bottom-color: #9ce27d;
+      box-shadow: inset 0 -6px 0 rgba(156,226,125,0.18);
+    }
+
+    .guest-controls {
+      width: 100%;
+      max-width: 420px;
+      margin-top: -4px;
+    }
+
+    .host-controls {
+      width: 100%;
+      max-width: 520px;
+    }
+
+    .letter-input-wrap {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .letter-input {
+      max-width: 120px;
+      text-align: center;
+      font-size: 34px;
+      margin-bottom: 0;
+      text-transform: uppercase;
+    }
+
+    .host-help {
+      color: #d7dfe1;
+      text-align: center;
+      margin-bottom: 22px;
+      line-height: 1.7;
+      font-size: 20px;
+    }
+
+    .host-form {
+      width: 100%;
+      max-width: 520px;
+      margin: 0 auto;
+    }
+
+    .row-btns {
+      display: flex;
+      gap: 12px;
+      margin-top: 10px;
+    }
+
+    .row-btns button {
+      flex: 1;
+    }
+
+    @media (max-width: 900px) {
+      .full {
+        padding: 18px 20px;
+        overflow-y: auto;
+      }
+
+      .title {
+        font-size: 50px;
+      }
+
+      .slot {
+        width: 50px;
+        height: 66px;
+        font-size: 34px;
+      }
+
+      .top-mini-bar {
+        flex-direction: column;
+        align-items: flex-start;
+      }
+
+      .letter-input-wrap {
+        flex-direction: column;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="chalk-bg">
+    <div class="app">
+
+      <section id="screen-start" class="screen active">
+        <div class="full center-wrap">
+          <div class="center-col">
+            <h1 class="title">Hangman</h1>
+            <div class="subtitle">
+              랜덤 매칭으로 출제자와 참가자가 정해집니다.<br>
+              참가자는 6번 안에 정답을 맞히면 승리합니다.
+            </div>
+
+            <label for="playerName">Name</label>
+            <input id="playerName" type="text" placeholder="이름을 입력하세요" />
+            <button class="btn-primary" onclick="startMatch()">Start</button>
+            <div id="startStatus" class="status-line"></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="screen-waiting" class="screen">
+        <div class="full center-wrap">
+          <div class="waiting-box">
+            <div class="big-icon">☁️</div>
+            <div class="big-text" id="waitingTitle">상대를 기다리는 중...</div>
+            <div class="small-text" id="waitingDesc">다른 플레이어가 접속하면 자동으로 매칭됩니다.</div>
+            <div class="countdown" id="waitingPlayerName"></div>
+            <div style="margin-top: 28px;">
+              <button class="btn-danger" onclick="leaveGame()">나가기</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="screen-role" class="screen">
+        <div class="full center-wrap">
+          <div class="role-box">
+            <div class="big-icon">✏️</div>
+            <div class="big-text" id="roleTitle">당신은 출제자입니다</div>
+            <div class="small-text" id="roleSub">잠시 후 게임 화면으로 이동합니다.</div>
+          </div>
+        </div>
+      </section>
+
+      <section id="screen-host-setup" class="screen">
+        <div class="full center-wrap">
+          <div style="width:100%; max-width:600px;">
+            <h1 class="title" style="font-size:48px;">문제를 출제하세요</h1>
+            <div class="host-help" id="hostSetupPlayers">
+              참가자 정보 로딩 중...
+            </div>
+
+            <div class="host-form">
+              <label>단어 입력</label>
+              <input id="hostWordInput" type="text" placeholder="예: love" />
+
+              <label>첫 힌트 입력</label>
+              <input id="hostHintInput" type="text" placeholder="예: 삶에 없으면 안 되는 것" />
+
+              <button class="btn-primary" onclick="submitHostSetup()">확인</button>
+              <div id="hostSetupStatus" class="status-line"></div>
+
+              <div style="margin-top:18px;">
+                <button class="btn-danger" onclick="leaveGame()">나가기</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="screen-game" class="screen">
+        <div class="full">
+          <div class="game-shell">
+            <div class="top-mini-bar">
+              <div class="top-mini-left">
+                <div class="mini-item mini-strong" id="gameRoleBadge">참가자</div>
+                <div class="mini-item">출제자: <span id="hostNameText">-</span></div>
+                <div class="mini-item">참가자: <span id="guestNameText">-</span></div>
+                <div class="mini-item">남은 기회: <span id="attemptsLeftText">6</span></div>
+              </div>
+              <button class="btn-danger" onclick="leaveGame()">나가기</button>
+            </div>
+
+            <div class="main-board">
+              <div class="board-inner">
+                <div class="hint-area">
+                  <div class="hint-title">HINT</div>
+                  <div id="hintList" class="hint-list-inline"></div>
+                </div>
+
+                <div class="chalk-stage">
+                  <img id="hangmanImage" class="hangman-image" src="/static/hang0.png" alt="hangman" />
+                </div>
+
+                <div id="midMessage" class="mid-message">게임이 시작되었습니다.</div>
+
+                <div id="wordSlots" class="word-wrap"></div>
+
+                <div id="guestSection" class="guest-controls" style="display:none;">
+                  <div class="letter-input-wrap">
+                    <input id="guestLetterInput" class="letter-input" maxlength="1" placeholder="A" />
+                    <button class="btn-primary" onclick="submitGuestLetter()">확인</button>
+                  </div>
+                  <div class="row-btns">
+                    <button class="btn-dark" onclick="clearSelectedLetter()">선택 해제</button>
+                  </div>
+                </div>
+
+                <div id="hostSection" class="host-controls" style="display:none;">
+                  <input id="newHintInput" type="text" placeholder="힌트를 입력하세요" />
+                  <div class="row-btns">
+                    <button class="btn-secondary" onclick="addHint()">힌트 추가</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="screen-result" class="screen">
+        <div class="full center-wrap">
+          <div class="result-box">
+            <div class="big-icon">🏁</div>
+            <div id="resultTitle" class="big-text">결과</div>
+            <div id="resultDesc" class="small-text">게임 결과 메시지</div>
+            <div id="resultAnswer" class="small-text" style="margin-top: 10px;"></div>
+            <div id="resultCountdown" class="countdown">5초 후 자동 재시작</div>
+            <div style="margin-top: 28px;">
+              <button class="btn-danger" onclick="leaveGame()">나가기</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+    </div>
+  </div>
+
+  <script>
+    let playerId = null;
+    let roomId = null;
+    let role = null;
+    let pollTimer = null;
+    let roleScreenShownAt = null;
+    let selectedSlotIndex = null;
+    let resultCountdownTimer = null;
+
+    function showScreen(id) {
+      document.querySelectorAll(".screen").forEach(el => el.classList.remove("active"));
+      document.getElementById(id).classList.add("active");
+    }
+
+    function setStartStatus(msg, isError = false) {
+      const el = document.getElementById("startStatus");
+      el.textContent = msg;
+      el.style.color = isError ? "#ff9b9b" : "#d8dddd";
+    }
+
+    function setHostSetupStatus(msg, isError = false) {
+      const el = document.getElementById("hostSetupStatus");
+      el.textContent = msg;
+      el.style.color = isError ? "#ff9b9b" : "#d8dddd";
+    }
+
+    async function api(url, options = {}) {
+      const res = await fetch(url, options);
+      return res.json();
+    }
+
+    function startPolling() {
+      stopPolling();
+      pollTimer = setInterval(refreshFlow, 1000);
+    }
+
+    function stopPolling() {
+      if (pollTimer) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+      }
+      if (resultCountdownTimer) {
+        clearInterval(resultCountdownTimer);
+        resultCountdownTimer = null;
+      }
+    }
+
+    function updateHangmanImage(attemptsUsed) {
+      const img = document.getElementById("hangmanImage");
+      img.src = `/static/hang${attemptsUsed}.png`;
+    }
+
+    async function startMatch() {
+      const name = document.getElementById("playerName").value.trim();
+      if (!name) {
+        setStartStatus("이름을 입력하세요.", true);
+        return;
+      }
+
+      const data = await api("/match/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name })
+      });
+
+      if (data.error) {
+        setStartStatus(data.error, true);
+        return;
+      }
+
+      playerId = data.player_id;
+
+      if (data.status === "waiting") {
+        document.getElementById("waitingTitle").textContent = "상대를 기다리는 중...";
+        document.getElementById("waitingDesc").textContent = "다른 플레이어가 접속하면 자동으로 매칭됩니다.";
+        document.getElementById("waitingPlayerName").textContent = name;
+        showScreen("screen-waiting");
+        startPolling();
+        return;
+      }
+
+      if (data.status === "matched") {
+        roomId = data.room_id;
+        role = data.role;
+        showRoleScreen();
+        startPolling();
+      }
+    }
+
+    async function refreshFlow() {
+      if (!playerId) return;
+
+      const player = await api(`/player/${playerId}`);
+      if (player.error) return;
+
+      if (player.status === "waiting") {
+        document.getElementById("waitingTitle").textContent = "상대를 기다리는 중...";
+        document.getElementById("waitingDesc").textContent = "다른 플레이어가 접속하면 자동으로 매칭됩니다.";
+        showScreen("screen-waiting");
+        return;
+      }
+
+      if (player.status === "matched") {
+        roomId = player.room_id;
+        role = player.role;
+
+        const room = await api(`/room/${roomId}`);
+        if (room.error) return;
+
+        if (!roleScreenShownAt) {
+          showRoleScreen();
+          return;
+        }
+
+        const elapsed = Date.now() - roleScreenShownAt;
+        if (elapsed < 1500) return;
+
+        if (room.state === "host_setup") {
+          if (role === "host") {
+            document.getElementById("hostSetupPlayers").textContent =
+              `참가자: ${room.host_name} / ${room.guest_name}`;
+            showScreen("screen-host-setup");
+          } else {
+            document.getElementById("waitingTitle").textContent = "문제를 기다리는 중...";
+            document.getElementById("waitingDesc").textContent = "출제자가 문제와 첫 힌트를 입력하고 있습니다.";
+            document.getElementById("waitingPlayerName").textContent = `${room.host_name}가 준비 중`;
+            showScreen("screen-waiting");
+          }
+          return;
+        }
+
+        if (room.state === "playing" || room.state === "awaiting_hint") {
+          renderGame(room);
+          showScreen("screen-game");
+          return;
+        }
+
+        if (room.state === "guest_won" || room.state === "host_won") {
+          renderResult(room);
+          showScreen("screen-result");
+          return;
+        }
+
+        if (room.state === "waiting") {
+          document.getElementById("waitingTitle").textContent = "상대를 기다리는 중...";
+          document.getElementById("waitingDesc").textContent = "상대가 나가서 대기 상태로 돌아왔습니다.";
+          document.getElementById("waitingPlayerName").textContent = player.name;
+          showScreen("screen-waiting");
+          return;
+        }
+      }
+    }
+
+    function showRoleScreen() {
+      roleScreenShownAt = Date.now();
+      document.getElementById("roleTitle").textContent =
+        role === "host" ? "당신은 출제자입니다" : "당신은 참가자입니다";
+      document.getElementById("roleSub").textContent =
+        role === "host"
+          ? "문제를 준비해주세요."
+          : "출제자가 문제를 준비하면 시작됩니다.";
+      showScreen("screen-role");
+    }
+
+    async function submitHostSetup() {
+      const word = document.getElementById("hostWordInput").value.trim();
+      const first_hint = document.getElementById("hostHintInput").value.trim();
+
+      if (!word || !first_hint) {
+        setHostSetupStatus("단어와 첫 힌트를 모두 입력하세요.", true);
+        return;
+      }
+
+      const data = await api(`/room/${roomId}/host/setup?player_id=${playerId}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ word, first_hint })
+      });
+
+      if (data.error) {
+        setHostSetupStatus(data.error, true);
+        return;
+      }
+
+      setHostSetupStatus("문제가 설정되었습니다.");
+      document.getElementById("hostWordInput").value = "";
+      document.getElementById("hostHintInput").value = "";
+      refreshFlow();
+    }
+
+    function renderGame(room) {
+      document.getElementById("gameRoleBadge").textContent =
+        role === "host" ? "출제자" : "참가자";
+      document.getElementById("hostNameText").textContent = room.host_name;
+      document.getElementById("guestNameText").textContent = room.guest_name;
+      document.getElementById("attemptsLeftText").textContent = room.attempts_left;
+
+      updateHangmanImage(room.attempts_used);
+
+      const guestSection = document.getElementById("guestSection");
+      const hostSection = document.getElementById("hostSection");
+
+      guestSection.style.display = role === "guest" ? "block" : "none";
+      hostSection.style.display = (role === "host" && room.state === "awaiting_hint") ? "block" : "none";
+
+      const wordSlots = document.getElementById("wordSlots");
+      wordSlots.innerHTML = "";
+
+      const wordLength = room.word_length || room.filled_letters.length;
+      for (let i = 0; i < wordLength; i++) {
+        const slot = document.createElement("div");
+        slot.className = "slot";
+
+        if (role === "guest" && room.state === "playing" && !room.filled_letters[i]) {
+          slot.classList.add("clickable");
+          slot.onclick = () => selectSlot(i);
+        }
+
+        if (selectedSlotIndex === i && role === "guest") {
+          slot.classList.add("selected");
+        }
+
+        slot.textContent = room.filled_letters[i] ? room.filled_letters[i].toUpperCase() : "";
+        wordSlots.appendChild(slot);
+      }
+
+      const hintList = document.getElementById("hintList");
+      hintList.innerHTML = "";
+      if (!room.hints || room.hints.length === 0) {
+        hintList.innerHTML = `<div class="hint-chip">아직 힌트가 없습니다.</div>`;
+      } else {
+        room.hints.forEach((hint, idx) => {
+          const div = document.createElement("div");
+          div.className = "hint-chip";
+          div.textContent = `${idx + 1}. ${hint}`;
+          hintList.appendChild(div);
+        });
+      }
+
+      let message = "";
+
+      if (room.state === "awaiting_hint") {
+        message = role === "host"
+          ? "참가자가 틀렸습니다. 새 힌트를 입력하세요."
+          : "오답입니다. 출제자가 힌트를 입력할 때까지 기다리세요.";
+      } else if (room.state === "playing") {
+        if (role === "host") {
+          message = "참가자가 문제를 푸는 중입니다.";
+        } else {
+          message = selectedSlotIndex === null
+            ? "빈 칸을 클릭한 뒤 아래에 알파벳을 입력하세요."
+            : `${selectedSlotIndex + 1}번째 칸 선택됨. 아래에 알파벳 1개를 입력하세요.`;
+        }
+      } else {
+        message = "상태를 불러오는 중입니다.";
+      }
+
+      document.getElementById("midMessage").textContent = message;
+    }
+
+    async function selectSlot(index) {
+      selectedSlotIndex = index;
+
+      const data = await api(`/room/${roomId}/guest/select-slot?player_id=${playerId}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ index })
+      });
+
+      if (data.error) {
+        return;
+      }
+
+      const room = await api(`/room/${roomId}`);
+      if (!room.error) renderGame(room);
+    }
+
+    async function submitGuestLetter() {
+      if (selectedSlotIndex === null) return;
+
+      const input = document.getElementById("guestLetterInput");
+      const letter = input.value.trim();
+
+      if (!letter || letter.length !== 1 || !/^[a-zA-Z]$/.test(letter)) {
+        return;
+      }
+
+      const data = await api(`/room/${roomId}/guest/fill-letter?player_id=${playerId}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ letter })
+      });
+
+      input.value = "";
+      selectedSlotIndex = null;
+
+      const room = await api(`/room/${roomId}`);
+      if (!room.error) {
+        if (room.state === "guest_won" || room.state === "host_won") {
+          renderResult(room);
+          showScreen("screen-result");
+        } else {
+          renderGame(room);
+        }
+      }
+    }
+
+    function clearSelectedLetter() {
+      selectedSlotIndex = null;
+      document.getElementById("guestLetterInput").value = "";
+      refreshFlow();
+    }
+
+    async function addHint() {
+      const hint = document.getElementById("newHintInput").value.trim();
+      if (!hint) return;
+
+      const data = await api(`/room/${roomId}/hint?player_id=${playerId}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ hint })
+      });
+
+      if (data.error) return;
+
+      document.getElementById("newHintInput").value = "";
+      refreshFlow();
+    }
+
+    function renderResult(room) {
+      document.getElementById("resultTitle").textContent =
+        room.state === "guest_won" ? "참가자 승리" : "출제자 승리";
+
+      document.getElementById("resultDesc").textContent =
+        room.result_message || "게임이 종료되었습니다.";
+
+      document.getElementById("resultAnswer").textContent =
+        room.correct_word ? `정답: ${room.correct_word.toUpperCase()}` : "";
+
+      const countdownEl = document.getElementById("resultCountdown");
+
+      if (resultCountdownTimer) {
+        clearInterval(resultCountdownTimer);
+        resultCountdownTimer = null;
+      }
+
+      function updateCountdown() {
+        if (!room.result_deadline) {
+          countdownEl.textContent = "";
+          return;
+        }
+        const left = Math.max(0, Math.ceil(room.result_deadline - (Date.now() / 1000)));
+        countdownEl.textContent = `${left}초 후 자동 재시작`;
+      }
+
+      updateCountdown();
+      resultCountdownTimer = setInterval(updateCountdown, 1000);
+    }
+
+    async function leaveGame() {
+      if (!playerId) {
+        location.reload();
+        return;
+      }
+
+      await api("/player/leave", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ player_id: playerId })
+      });
+
+      stopPolling();
+      playerId = null;
+      roomId = null;
+      role = null;
+      roleScreenShownAt = null;
+      selectedSlotIndex = null;
+      location.reload();
+    }
+
+    window.addEventListener("beforeunload", () => {
+      if (playerId) {
+        navigator.sendBeacon(
+          "/player/leave",
+          new Blob([JSON.stringify({ player_id: playerId })], { type: "application/json" })
+        );
+      }
+    });
+
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        const gameScreen = document.getElementById("screen-game");
+        if (gameScreen.classList.contains("active") && role === "guest") {
+          submitGuestLetter();
+        }
+      }
+    });
+  </script>
+</body>
+</html>
