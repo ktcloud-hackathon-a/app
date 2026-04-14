@@ -1,0 +1,92 @@
+# 이 CronJob은 preview namespace의 만료 시간을 보고 주기적으로 정리합니다.
+# 동작 방식:
+# 1. label `preview-environment=true` 가 붙은 namespace 조회
+# 2. annotation `preview.example.com/expires-at` 가 현재 UTC 시각보다 과거면 만료로 판단
+# 3. preview namespace 삭제
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: preview-system
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: preview-cleaner
+  namespace: preview-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: preview-cleaner
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: preview-cleaner
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: preview-cleaner
+subjects:
+  - kind: ServiceAccount
+    name: preview-cleaner
+    namespace: preview-system
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: cleanup-expired-preview
+  namespace: preview-system
+spec:
+  # 5분마다 만료된 preview 환경 확인
+  schedule: "*/5 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      template:
+        spec:
+          serviceAccountName: preview-cleaner
+          restartPolicy: OnFailure
+          containers:
+            - name: preview-cleaner
+              image: alpine:3.20
+              imagePullPolicy: IfNotPresent
+              command:
+                - /bin/sh
+                - -ceu
+                - |
+                  apk add --no-cache kubectl >/dev/null
+
+                  NOW="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+                  echo "UTC now: $NOW"
+
+                  kubectl get namespaces \
+                    -l preview-environment=true \
+                    -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' |
+                  while read -r ns; do
+                    [ -z "$ns" ] && continue
+
+                    expires="$(kubectl get namespace "$ns" -o jsonpath='{.metadata.annotations.preview\.example\.com/expires-at}')"
+
+                    if [ -z "$expires" ]; then
+                      echo "skip $ns: expires-at annotation 없음"
+                      continue
+                    fi
+
+                    oldest="$(printf '%s\n%s\n' "$expires" "$NOW" | sort | head -n1)"
+                    if [ "$oldest" != "$expires" ] || [ "$expires" = "$NOW" ]; then
+                      echo "keep $ns: not expired yet ($expires)"
+                      continue
+                    fi
+
+                    echo "expired namespace detected: $ns (expires-at=$expires)"
+
+                    kubectl delete namespace "$ns" --wait=false
+                  done

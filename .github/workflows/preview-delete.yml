@@ -1,0 +1,190 @@
+# PR이 닫히면 preview namespace를 삭제합니다.
+#
+# 현재 흐름:
+# 1. GitHub-hosted runner가 AWS SSM으로 private k3s 서버에 명령 전달
+# 2. k3s 서버에서 preview namespace 삭제
+#
+# 댓글/사람이 보는 시간은 KST 기준으로 표시합니다.
+#
+# 필요한 GitHub Secrets 예시:
+# - AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY
+name: Preview Delete
+
+on:
+  pull_request:
+    types: [closed]
+
+env:
+  PREVIEW_BASE_DOMAIN: ajasu.kro.kr
+  AWS_REGION: ap-northeast-2
+  K3S_SERVER_TAG_NAME: EaaS-K3s-Server
+  SSM_COMMAND_TIMEOUT_SECONDS: "600"
+
+jobs:
+  delete-preview:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: AWS 자격 증명 설정 (Access Key)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
+      - name: 삭제 대상 k3s 서버 조회
+        id: target
+        shell: bash
+        run: |
+          INSTANCE_ID="$(aws ec2 describe-instances \
+            --region "$AWS_REGION" \
+            --filters \
+              "Name=tag:Name,Values=${K3S_SERVER_TAG_NAME}" \
+              "Name=instance-state-name,Values=running" \
+            --query 'Reservations[].Instances[].InstanceId' \
+            --output text | awk '{print $1}')"
+
+          if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = "None" ]; then
+            echo "실행 중인 k3s 서버를 찾지 못했습니다. tag:Name=${K3S_SERVER_TAG_NAME}" >&2
+            exit 1
+          fi
+
+          echo "instance_id=${INSTANCE_ID}" >> "$GITHUB_OUTPUT"
+
+      - name: PR이 닫히면 preview namespace 삭제
+        shell: bash
+        env:
+          INSTANCE_ID: ${{ steps.target.outputs.instance_id }}
+        run: |
+          # 닫힘 시에는 preview namespace만 삭제합니다.
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+          NAMESPACE="preview-pr-${PR_NUMBER}"
+
+          REMOTE_SCRIPT_FILE="$(mktemp)"
+          cat > "$REMOTE_SCRIPT_FILE" <<EOF
+          #!/bin/bash
+          set -euo pipefail
+
+          export KUBECONFIG=/home/ubuntu/.kube/config
+          k() { sudo -u ubuntu env KUBECONFIG="\$KUBECONFIG" /usr/local/bin/kubectl "\$@"; }
+
+          NAMESPACE="${NAMESPACE}"
+
+          if ! k get namespace "\$NAMESPACE" >/dev/null 2>&1; then
+            echo "namespace \$NAMESPACE 가 이미 없어 cleanup을 건너뜁니다."
+            exit 0
+          fi
+
+          k delete namespace "\$NAMESPACE" --ignore-not-found=true --wait=false
+          EOF
+
+          REMOTE_SCRIPT_B64="$(base64 -w 0 "$REMOTE_SCRIPT_FILE")"
+          SSM_INPUT_FILE="$(mktemp)"
+          cat > "$SSM_INPUT_FILE" <<EOF
+          {
+            "DocumentName": "AWS-RunShellScript",
+            "InstanceIds": ["${INSTANCE_ID}"],
+            "Parameters": {
+              "commands": [
+                "echo '${REMOTE_SCRIPT_B64}' | base64 -d > /tmp/preview-delete.sh",
+                "chmod +x /tmp/preview-delete.sh",
+                "/tmp/preview-delete.sh"
+              ]
+            }
+          }
+          EOF
+
+          COMMAND_ID="$(aws ssm send-command \
+            --region "$AWS_REGION" \
+            --cli-input-json "file://${SSM_INPUT_FILE}" \
+            --query 'Command.CommandId' \
+            --output text)"
+
+          START_TIME="$(date +%s)"
+          FINAL_STATUS=""
+
+          while true; do
+            STATUS="$(aws ssm get-command-invocation \
+              --region "$AWS_REGION" \
+              --command-id "$COMMAND_ID" \
+              --instance-id "$INSTANCE_ID" \
+              --query 'Status' \
+              --output text 2>/dev/null || true)"
+
+            case "$STATUS" in
+              Success)
+                FINAL_STATUS="$STATUS"
+                break
+                ;;
+              Failed|Cancelled|TimedOut|Cancelling)
+                FINAL_STATUS="$STATUS"
+                break
+                ;;
+              Pending|InProgress|Delayed|"")
+                NOW="$(date +%s)"
+                ELAPSED="$((NOW - START_TIME))"
+                if [ "$ELAPSED" -ge "$SSM_COMMAND_TIMEOUT_SECONDS" ]; then
+                  FINAL_STATUS="TimedOut"
+                  echo "SSM command timed out after ${SSM_COMMAND_TIMEOUT_SECONDS}s (last status: ${STATUS:-unknown})" >&2
+                  break
+                fi
+                sleep 10
+                ;;
+              *)
+                NOW="$(date +%s)"
+                ELAPSED="$((NOW - START_TIME))"
+                if [ "$ELAPSED" -ge "$SSM_COMMAND_TIMEOUT_SECONDS" ]; then
+                  FINAL_STATUS="$STATUS"
+                  echo "SSM command timed out after ${SSM_COMMAND_TIMEOUT_SECONDS}s (last status: ${STATUS})" >&2
+                  break
+                fi
+                sleep 10
+                ;;
+            esac
+          done
+
+          aws ssm get-command-invocation \
+            --region "$AWS_REGION" \
+            --command-id "$COMMAND_ID" \
+            --instance-id "$INSTANCE_ID" \
+            --query 'StandardOutputContent' \
+            --output text || true
+
+          if [ "$FINAL_STATUS" != "Success" ]; then
+            aws ssm get-command-invocation \
+              --region "$AWS_REGION" \
+              --command-id "$COMMAND_ID" \
+              --instance-id "$INSTANCE_ID" \
+              --query 'StandardErrorContent' \
+              --output text || true
+            exit 1
+          fi
+
+      - name: 닫힘 시각 계산
+        shell: bash
+        run: |
+          CLOSED_AT_RAW="${{ github.event.pull_request.closed_at }}"
+          if [ -n "$CLOSED_AT_RAW" ]; then
+            CLOSED_AT_KST="$(TZ=Asia/Seoul date -d "$CLOSED_AT_RAW" '+%Y-%m-%d %H:%M:%S %Z')"
+          else
+            CLOSED_AT_KST=""
+          fi
+
+          echo "CLOSED_AT_KST=${CLOSED_AT_KST}" >> "$GITHUB_ENV"
+
+      - name: PR에 preview 삭제 댓글 남기기
+        uses: peter-evans/create-or-update-comment@v4
+        with:
+          issue-number: ${{ github.event.pull_request.number }}
+          body: |
+            PR이 닫혀서 preview 환경 삭제를 시작했습니다.
+
+            - Namespace: `preview-pr-${{ github.event.pull_request.number }}`
+            - URL: `http://pr-${{ github.event.pull_request.number }}.${{ env.PREVIEW_BASE_DOMAIN }}`
+            - PR 닫힘 시각(KST): `${{ env.CLOSED_AT_KST }}`

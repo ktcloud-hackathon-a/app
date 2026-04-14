@@ -1,0 +1,276 @@
+# PR이 열리거나 업데이트되면 preview 환경을 생성/갱신합니다.
+#
+# 현재 흐름:
+# 1. GitHub-hosted runner에서 Docker 이미지를 build/push
+# 2. AWS SSM으로 private k3s 서버에 명령 전달
+# 3. k3s 서버에서 namespace / app / ingress 배포
+#
+# preview URL 형식:
+# - http://pr-<번호>.ajasu.kro.kr
+#
+# 전제 조건:
+# - ALB -> k3s ingress controller(default Traefik) -> Ingress 경로가 준비되어 있어야 함
+#
+# 시간 처리 원칙:
+# - 댓글/사람이 보는 값은 KST 기준으로 표시
+# - cleanup 판단용 annotation은 UTC 기준으로 유지
+#
+# 필요한 GitHub Secrets 예시:
+# - DOCKERHUB_USERNAME
+# - DOCKERHUB_TOKEN
+# - AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY
+#
+name: Preview Deploy
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    #paths:
+    #  - "app/**"
+    #  - ".github/workflows/**"
+
+env:
+  # Docker Hub에 push할 이미지 저장소
+  IMAGE_REPOSITORY: z33hyo/hackathon-ajasu
+  # preview namespace 만료 시각 계산용 TTL(시간)
+  PREVIEW_TTL_HOURS: "2"
+  # SSM 원격 명령 전체 대기 시간(초)
+  SSM_COMMAND_TIMEOUT_SECONDS: "600"
+  # PR별 host는 pr-<번호>.<이 도메인> 형식으로 생성
+  PREVIEW_BASE_DOMAIN: ajasu.kro.kr
+  AWS_REGION: ap-northeast-2
+  # SSM으로 명령을 보낼 k3s 서버의 Name 태그
+  K3S_SERVER_TAG_NAME: EaaS-K3s-Server
+
+jobs:
+  deploy-preview:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Preview 변수 계산
+        shell: bash
+        run: |
+          # PR 번호를 기준으로 namespace / host / image tag를 계산합니다.
+          SHORT_SHA="${GITHUB_SHA::7}"
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+          NAMESPACE="preview-pr-${PR_NUMBER}"
+          PREVIEW_HOST="pr-${PR_NUMBER}.${PREVIEW_BASE_DOMAIN}"
+          IMAGE_TAG="pr-${PR_NUMBER}-${SHORT_SHA}"
+          GENERATED_AT_KST="$(TZ=Asia/Seoul date '+%Y-%m-%d %H:%M:%S %Z')"
+          EXPIRES_AT_UTC="$(date -u -d "+${PREVIEW_TTL_HOURS} hours" '+%Y-%m-%dT%H:%M:%SZ')"
+          EXPIRES_AT_KST="$(TZ=Asia/Seoul date -d "+${PREVIEW_TTL_HOURS} hours" '+%Y-%m-%d %H:%M:%S %Z')"
+
+          echo "PR_NUMBER=${PR_NUMBER}" >> "$GITHUB_ENV"
+          echo "NAMESPACE=${NAMESPACE}" >> "$GITHUB_ENV"
+          echo "PREVIEW_HOST=${PREVIEW_HOST}" >> "$GITHUB_ENV"
+          echo "IMAGE_TAG=${IMAGE_TAG}" >> "$GITHUB_ENV"
+          echo "GENERATED_AT_KST=${GENERATED_AT_KST}" >> "$GITHUB_ENV"
+          echo "EXPIRES_AT_UTC=${EXPIRES_AT_UTC}" >> "$GITHUB_ENV"
+          echo "EXPIRES_AT_KST=${EXPIRES_AT_KST}" >> "$GITHUB_ENV"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: envsubst 설치
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gettext-base
+
+      - name: Docker Hub 로그인
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: 이미지 빌드 및 푸시
+        uses: docker/build-push-action@v6
+        with:
+          # app 폴더만 build context로 사용합니다.
+          context: ./app
+          file: ./app/Dockerfile
+          push: true
+          tags: ${{ env.IMAGE_REPOSITORY }}:${{ env.IMAGE_TAG }}
+
+      - name: AWS 자격 증명 설정 (Access Key)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
+      - name: 배포 대상 k3s 서버 조회
+        id: target
+        shell: bash
+        run: |
+          INSTANCE_ID="$(aws ec2 describe-instances \
+            --region "$AWS_REGION" \
+            --filters \
+              "Name=tag:Name,Values=${K3S_SERVER_TAG_NAME}" \
+              "Name=instance-state-name,Values=running" \
+            --query 'Reservations[].Instances[].InstanceId' \
+            --output text | awk '{print $1}')"
+
+          if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = "None" ]; then
+            echo "실행 중인 k3s 서버를 찾지 못했습니다. tag:Name=${K3S_SERVER_TAG_NAME}" >&2
+            exit 1
+          fi
+
+          echo "instance_id=${INSTANCE_ID}" >> "$GITHUB_OUTPUT"
+
+      - name: SSM으로 preview 배포
+        shell: bash
+        env:
+          INSTANCE_ID: ${{ steps.target.outputs.instance_id }}
+        run: |
+          # workflow에서 템플릿을 먼저 치환한 뒤,
+          # base64로 감싸서 SSM 원격 스크립트 안으로 전달합니다.
+          APP_MANIFEST_B64="$(envsubst '${NAMESPACE} ${PR_NUMBER} ${IMAGE_REPOSITORY} ${IMAGE_TAG}' < k3s/runtime/preview-app-example.yaml | base64 -w 0)"
+          INGRESS_MANIFEST_B64="$(envsubst '${NAMESPACE} ${PREVIEW_HOST}' < k3s/runtime/preview-ingress.yaml | base64 -w 0)"
+
+          REMOTE_SCRIPT_FILE="$(mktemp)"
+          cat > "$REMOTE_SCRIPT_FILE" <<EOF
+          #!/bin/bash
+          set -euo pipefail
+
+          export KUBECONFIG=/home/ubuntu/.kube/config
+          k() { sudo -u ubuntu env KUBECONFIG="\$KUBECONFIG" /usr/local/bin/kubectl "\$@"; }
+
+          NAMESPACE="${NAMESPACE}"
+          PR_NUMBER="${PR_NUMBER}"
+          PREVIEW_HOST="${PREVIEW_HOST}"
+          EXPIRES_AT_UTC="${EXPIRES_AT_UTC}"
+          EXPIRES_AT_KST="${EXPIRES_AT_KST}"
+          APP_MANIFEST_B64='${APP_MANIFEST_B64}'
+          INGRESS_MANIFEST_B64='${INGRESS_MANIFEST_B64}'
+
+          k create namespace "\$NAMESPACE" --dry-run=client -o yaml | k apply -f -
+          k label namespace "\$NAMESPACE" \
+            preview-environment=true \
+            pr-number="\$PR_NUMBER" \
+            managed-by=github-actions \
+            --overwrite
+          k annotate namespace "\$NAMESPACE" \
+            preview.example.com/expires-at="\$EXPIRES_AT_UTC" \
+            preview.example.com/expires-at-kst="\$EXPIRES_AT_KST" \
+            --overwrite
+
+          # 현재 app manifest가 DB env 이름을 요구하므로,
+          # 외부 DB 연결 없이도 배포가 깨지지 않도록 placeholder secret만 유지합니다.
+          k -n "\$NAMESPACE" create secret generic app-db-secret \
+            --from-literal=DB_HOST="unused" \
+            --from-literal=DB_PORT="3306" \
+            --from-literal=DB_NAME="preview_app" \
+            --from-literal=DB_USER="unused" \
+            --from-literal=DB_PASSWORD="unused" \
+            --dry-run=client -o yaml | k apply -f -
+
+          # 앱과 ingress를 바로 배포합니다.
+          printf '%s' "\$APP_MANIFEST_B64" | base64 -d > /tmp/preview-app-example.yaml
+          k apply -f /tmp/preview-app-example.yaml
+
+          printf '%s' "\$INGRESS_MANIFEST_B64" | base64 -d > /tmp/preview-ingress.yaml
+          k apply -f /tmp/preview-ingress.yaml
+          EOF
+
+          REMOTE_SCRIPT_B64="$(base64 -w 0 "$REMOTE_SCRIPT_FILE")"
+          SSM_INPUT_FILE="$(mktemp)"
+          cat > "$SSM_INPUT_FILE" <<EOF
+          {
+            "DocumentName": "AWS-RunShellScript",
+            "InstanceIds": ["${INSTANCE_ID}"],
+            "Parameters": {
+              "commands": [
+                "echo '${REMOTE_SCRIPT_B64}' | base64 -d > /tmp/preview-deploy.sh",
+                "chmod +x /tmp/preview-deploy.sh",
+                "/tmp/preview-deploy.sh"
+              ]
+            }
+          }
+          EOF
+
+          COMMAND_ID="$(aws ssm send-command \
+            --region "$AWS_REGION" \
+            --cli-input-json "file://${SSM_INPUT_FILE}" \
+            --query 'Command.CommandId' \
+            --output text)"
+
+          START_TIME="$(date +%s)"
+          FINAL_STATUS=""
+
+          while true; do
+            STATUS="$(aws ssm get-command-invocation \
+              --region "$AWS_REGION" \
+              --command-id "$COMMAND_ID" \
+              --instance-id "$INSTANCE_ID" \
+              --query 'Status' \
+              --output text 2>/dev/null || true)"
+
+            case "$STATUS" in
+              Success)
+                FINAL_STATUS="$STATUS"
+                break
+                ;;
+              Failed|Cancelled|TimedOut|Cancelling)
+                FINAL_STATUS="$STATUS"
+                break
+                ;;
+              Pending|InProgress|Delayed|"")
+                NOW="$(date +%s)"
+                ELAPSED="$((NOW - START_TIME))"
+                if [ "$ELAPSED" -ge "$SSM_COMMAND_TIMEOUT_SECONDS" ]; then
+                  FINAL_STATUS="TimedOut"
+                  echo "SSM command timed out after ${SSM_COMMAND_TIMEOUT_SECONDS}s (last status: ${STATUS:-unknown})" >&2
+                  break
+                fi
+                sleep 10
+                ;;
+              *)
+                NOW="$(date +%s)"
+                ELAPSED="$((NOW - START_TIME))"
+                if [ "$ELAPSED" -ge "$SSM_COMMAND_TIMEOUT_SECONDS" ]; then
+                  FINAL_STATUS="$STATUS"
+                  echo "SSM command timed out after ${SSM_COMMAND_TIMEOUT_SECONDS}s (last status: ${STATUS})" >&2
+                  break
+                fi
+                sleep 10
+                ;;
+            esac
+          done
+
+          aws ssm get-command-invocation \
+            --region "$AWS_REGION" \
+            --command-id "$COMMAND_ID" \
+            --instance-id "$INSTANCE_ID" \
+            --query 'StandardOutputContent' \
+            --output text || true
+
+          if [ "$FINAL_STATUS" != "Success" ]; then
+            aws ssm get-command-invocation \
+              --region "$AWS_REGION" \
+              --command-id "$COMMAND_ID" \
+              --instance-id "$INSTANCE_ID" \
+              --query 'StandardErrorContent' \
+              --output text || true
+            exit 1
+          fi
+
+      - name: PR에 preview 상태 댓글 남기기
+        uses: peter-evans/create-or-update-comment@v4
+        with:
+          issue-number: ${{ github.event.pull_request.number }}
+          body: |
+            미리보기 환경이 생성되었습니다.
+
+            - Namespace: `${{ env.NAMESPACE }}`
+            - Image: `${{ env.IMAGE_REPOSITORY }}:${{ env.IMAGE_TAG }}`
+            - URL: `http://${{ env.PREVIEW_HOST }}`
+            - 생성 시각(KST): `${{ env.GENERATED_AT_KST }}`
+            - 만료 시각(KST): `${{ env.EXPIRES_AT_KST }}`
+            - Service: `preview-app.${{ env.NAMESPACE }}.svc.cluster.local`

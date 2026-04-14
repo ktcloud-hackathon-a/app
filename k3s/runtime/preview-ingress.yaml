@@ -1,0 +1,21 @@
+# PR별 preview 앱을 Traefik으로 외부에 노출하는 Ingress 예시입니다.
+# workflow가 PREVIEW_HOST를 계산해서 envsubst로 주입합니다.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: preview-app
+  namespace: ${NAMESPACE}
+  annotations:
+    kubernetes.io/ingress.class: traefik
+spec:
+  rules:
+    - host: ${PREVIEW_HOST}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: preview-app
+                port:
+                  number: 80

@@ -1,0 +1,41 @@
+# 이 파일은 GitHub Actions가 envsubst로 값을 주입해서 배포하는 예시입니다.
+# namespace 생성과 DB Secret 생성은 workflow에서 먼저 처리한다고 가정합니다.
+# 외부 공개 URL / Ingress는 아직 결정하지 않았으므로 이 파일에서는 제외합니다.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: preview-app
+  namespace: ${NAMESPACE}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: preview-app
+  template:
+    metadata:
+      labels:
+        app: preview-app
+        pr-number: "${PR_NUMBER}"
+    spec:
+      containers:
+        - name: preview-app
+          image: ${IMAGE_REPOSITORY}:${IMAGE_TAG}
+          ports:
+            - containerPort: 8000
+          env:
+            - name: APP_ENV
+              value: preview
+            - name: PR_NUMBER
+              value: "${PR_NUMBER}"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: preview-app
+  namespace: ${NAMESPACE}
+spec:
+  selector:
+    app: preview-app
+  ports:
+    - port: 80
+      targetPort: 8000
