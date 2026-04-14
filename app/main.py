@@ -448,3 +448,4 @@ def leave_player(req: LeaveRequest):
         del players[req.player_id]
 
     return {"message": "플레이어가 나갔습니다."}
+
