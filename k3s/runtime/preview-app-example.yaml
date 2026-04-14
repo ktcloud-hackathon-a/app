@@ -22,6 +22,22 @@ spec:
           image: ${IMAGE_REPOSITORY}:${IMAGE_TAG}
           ports:
             - containerPort: 8000
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 3
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
           env:
             - name: APP_ENV
               value: preview
